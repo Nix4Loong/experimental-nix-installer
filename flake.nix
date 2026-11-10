@@ -2,18 +2,13 @@
   description = "Nix Installer";
 
   inputs = {
-    nixpkgs.follows = "nix/nixpkgs";
+    nixpkgs.url = "github:loongson-community/nixpkgs/loong-master";
 
     crane.url = "github:ipetkov/crane";
 
-    nix = {
-      url = "github:NixOS/nix";
-      # work around 7730 and https://github.com/NixOS/nix/issues/7807
-      inputs.flake-compat.follows = "";
-      inputs.nixpkgs-regression.follows = "";
-      inputs.nixpkgs-23-11.follows = "";
-      inputs.flake-parts.follows = "";
-      inputs.git-hooks-nix.follows = "";
+    fenix = {
+      url = "github:nix-community/fenix";
+      flake = false;
     };
 
     treefmt-nix.url = "github:numtide/treefmt-nix";
@@ -25,7 +20,7 @@
       self,
       nixpkgs,
       crane,
-      nix,
+      fenix,
       treefmt-nix,
       ...
     }:
@@ -33,9 +28,7 @@
       inherit (nixpkgs) lib;
 
       supportedSystems = [
-        "x86_64-linux"
-        "aarch64-linux"
-        "aarch64-darwin"
+        "loongarch64-linux"
       ];
 
       # TODO: What about supporting cross? Probably best would be to just have a
@@ -66,8 +59,7 @@
       nixTarballZstd =
         { pkgs, system }:
         let
-          # TODO: Just use nix's makeComponents.
-          nixPkg = nix.packages.${system}.nix;
+          nixPkg = pkgs.nix;
           cacertPkg = pkgs.cacert;
           installerClosureInfo = pkgs.buildPackages.closureInfo {
             rootPaths = [
@@ -121,10 +113,32 @@
           extraRustFlags ? "",
         }:
         let
-          craneLib = crane.mkLib pkgs;
+          isStaticLoongArch =
+            stdenv.hostPlatform.isStatic && buildPackages.stdenv.hostPlatform.system == "loongarch64-linux";
+          craneLib =
+            if isStaticLoongArch then
+              let
+                fenixPkgs = import fenix {
+                  system = "loongarch64-linux";
+                  pkgs = buildPackages;
+                };
+              in
+              (crane.mkLib buildPackages).overrideToolchain (
+                with fenixPkgs;
+                combine [
+                  stable.clippy
+                  stable.rustc
+                  stable.cargo
+                  stable.rustfmt
+                  stable.rust-src
+                  targets.loongarch64-unknown-linux-musl.stable.rust-std
+                ]
+              )
+            else
+              crane.mkLib pkgs;
           tarballPkg = nixTarballZstd {
-            inherit pkgs;
-            system = stdenv.hostPlatform.system;
+            pkgs = buildPackages;
+            system = buildPackages.stdenv.hostPlatform.system;
           };
           sharedAttrs = {
             src = pkgs.lib.fileset.toSource {
@@ -136,6 +150,7 @@
                 ./src
                 ./crates
                 ./tests
+                ./nix-installer.sh
                 ./rustfmt.toml
                 ./rust-toolchain.toml
               ];
@@ -144,16 +159,23 @@
             # Required to link build scripts.
             depsBuildBuild = [ buildPackages.stdenv.cc ];
 
-            env = {
-              # For whatever reason, these don't seem to get set
-              # automatically when using crane.
-              #
-              # Possibly related: <https://github.com/NixOS/nixpkgs/pull/369424>
-              "CC_${stdenv.hostPlatform.rust.cargoEnvVarTarget}" = "${stdenv.cc.targetPrefix}cc";
-              "CXX_${stdenv.hostPlatform.rust.cargoEnvVarTarget}" = "${stdenv.cc.targetPrefix}c++";
-              "CARGO_TARGET_${stdenv.hostPlatform.rust.cargoEnvVarTarget}_LINKER" = "${stdenv.cc.targetPrefix}cc";
-              CARGO_BUILD_TARGET = stdenv.hostPlatform.rust.rustcTarget;
-            };
+            env =
+              if isStaticLoongArch then
+                {
+                  CARGO_BUILD_TARGET = "loongarch64-unknown-linux-musl";
+                  RUSTFLAGS = "-C target-feature=+crt-static -C link-self-contained=yes -C default-linker-libraries=yes";
+                }
+              else
+                {
+                  # For whatever reason, these don't seem to get set
+                  # automatically when using crane.
+                  #
+                  # Possibly related: <https://github.com/NixOS/nixpkgs/pull/369424>
+                  "CC_${stdenv.hostPlatform.rust.cargoEnvVarTarget}" = "${stdenv.cc.targetPrefix}cc";
+                  "CXX_${stdenv.hostPlatform.rust.cargoEnvVarTarget}" = "${stdenv.cc.targetPrefix}c++";
+                  "CARGO_TARGET_${stdenv.hostPlatform.rust.cargoEnvVarTarget}_LINKER" = "${stdenv.cc.targetPrefix}cc";
+                  CARGO_BUILD_TARGET = stdenv.hostPlatform.rust.rustcTarget;
+                };
           };
           cargoArtifacts = craneLib.buildDepsOnly sharedAttrs;
 
@@ -195,7 +217,7 @@
               doCheck = false;
               env =
                 sharedAttrs.env
-                // {
+                // pkgs.lib.optionalAttrs (!isStaticLoongArch) {
                   RUSTFLAGS = "${if extraRustFlags != "" then " ${extraRustFlags}" else ""}";
                   # The nixpkgs 25.11 darwin stdenv adds libiconv to NIX_LDFLAGS,
                   # causing the linker to pull it in as a dynamic dependency even
@@ -207,6 +229,9 @@
                 // pkgs.lib.optionalAttrs stdenv.hostPlatform.isDarwin {
                   NIX_MOUNTD_BINARY_PATH = "${nixMountd}/bin/nix-mountd";
                 };
+              postInstall = ''
+                cp nix-installer.sh $out/bin/nix-installer.sh
+              '';
             }
           );
         in
@@ -236,6 +261,7 @@
                   --cacert-store-path ${tarballPkg.passthru.cacertStorePath} \
                   --nix-version ${tarballPkg.passthru.nixVersion} \
                   --output $out/bin/nix-installer
+                install -m755 ${bare}/bin/nix-installer.sh $out/bin/nix-installer.sh
               '';
 
           test = craneLib.cargoTest (
@@ -284,7 +310,9 @@
           buildPackages = final.buildPackages;
         };
 
-        nix-installer-static = final.pkgsStatic.callPackage installerPackage { };
+        nix-installer-static = final.pkgsStatic.callPackage installerPackage {
+          extraRustFlags = "-C target-feature=+crt-static -C link-self-contained=yes -C default-linker-libraries=yes";
+        };
       };
 
       devShells = forAllSystems (
@@ -352,15 +380,16 @@
           # Extract version from Cargo.toml
           cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
           installerVersion = cargoToml.package.version;
-          nixVersion = nix.packages.${system}.nix.version;
+          nixVersion = pkgs.nix.version;
           # Extract major.minor from both versions
           versionParts = ver: builtins.match "([0-9]+)\\.([0-9]+).*" ver;
           installerMajorMinor = versionParts installerVersion;
           nixMajorMinor = versionParts nixVersion;
 
-          vmTests = import ./nix/tests/vm-test { inherit nixpkgsFor lib; };
-          containerTests = import ./nix/tests/container-test { inherit nixpkgsFor lib; };
           vmTestChecks = lib.optionalAttrs (system == "x86_64-linux") (
+            let
+              vmTests = import ./nix/tests/vm-test { inherit nixpkgsFor lib; };
+            in
             lib.concatMapAttrs (
               distroName: distroTests:
               if distroName != "all" then
@@ -372,6 +401,9 @@
             ) vmTests
           );
           containerTestChecks = lib.optionalAttrs (system == "x86_64-linux") (
+            let
+              containerTests = import ./nix/tests/container-test { inherit nixpkgsFor lib; };
+            in
             lib.concatMapAttrs (
               distroName: distroTests:
               if distroName != "all" then
@@ -418,6 +450,10 @@
           inherit (pkgs) nix-installer-static;
           default = pkgs.nix-installer-static;
         }
+        // lib.optionalAttrs (system == "loongarch64-linux") {
+          inherit (pkgs) nix-installer-static;
+          default = pkgs.nix-installer-static;
+        }
         // lib.optionalAttrs (pkgs.stdenv.isDarwin) {
           default = pkgs.nix-installer;
         }
@@ -442,8 +478,112 @@
         }
       );
 
-      hydraJobs = {
-        build = forAllSystems (system: self.packages.${system}.default);
-      };
+      hydraJobs =
+        let
+          version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+          installerName = "nix-installer-loongarch64-linux";
+          installerScriptName = "nix-installer.sh";
+        in
+        rec {
+          build = forAllSystems (
+            system:
+            let
+              pkgs = nixpkgsFor.${system};
+              dist = self.packages.${system}.default;
+            in
+            pkgs.runCommand "build" { } ''
+              mkdir -p $out/nix-support $out/bin
+
+              cp ${dist}/bin/nix-installer $out/bin/${installerName}
+              cp ${dist}/bin/nix-installer.sh $out/bin/${installerScriptName}
+              sed -i '1s|^#!.*|#!/bin/sh|' $out/bin/${installerScriptName}
+              sed -i 's/\$assemble_installer_templated_version/v${version}/g' $out/bin/${installerScriptName}
+              echo "v${version}" > $out/version
+
+              echo "file binary-dist $out/bin/${installerName}" >> $out/nix-support/hydra-build-products
+              echo "file binary-dist $out/bin/${installerScriptName}" >> $out/nix-support/hydra-build-products
+            ''
+          );
+
+          runCommandHook.publish =
+            let
+              pkgs = nixpkgsFor.loongarch64-linux;
+              app = pkgs.writeShellApplication {
+                name = "publish-hook";
+                runtimeInputs = with pkgs; [
+                  jq
+                  curl
+                ];
+                text = ''
+                  set -euo pipefail
+
+                  VERSION_PATH="${build.loongarch64-linux}/version"
+                  NIX_INSTALLER_PATH="${build.loongarch64-linux}/bin/${installerName}"
+                  NIX_INSTALLER_SH_PATH="${build.loongarch64-linux}/bin/${installerScriptName}"
+                  if [ "$VERSION_PATH" = "null" ] || [ ! -f "$VERSION_PATH" ]; then
+                    echo "Error: version file not found"
+                    exit 1
+                  fi
+                  if [ "$NIX_INSTALLER_PATH" = "null" ] || [ ! -f "$NIX_INSTALLER_PATH" ]; then
+                    echo "Error: nix-installer not found"
+                    exit 1
+                  fi
+                  if [ "$NIX_INSTALLER_SH_PATH" = "null" ] || [ ! -f "$NIX_INSTALLER_SH_PATH" ]; then
+                    echo "Error: nix-installer.sh not found"
+                    exit 1
+                  fi
+
+                  VERSION=$(cat "$VERSION_PATH")
+                  echo "Version: $VERSION"
+                  echo "Found nix-installer at: $NIX_INSTALLER_PATH"
+                  echo "Found nix-installer.sh at: $NIX_INSTALLER_SH_PATH"
+
+                  PUBLISH_JSON=$(jq -n \
+                    --arg nix_installer "$NIX_INSTALLER_PATH" \
+                    --arg nix_installer_sh "$NIX_INSTALLER_SH_PATH" \
+                    --arg version "$VERSION" \
+                    '[
+                      {
+                        "from": $nix_installer,
+                        "to": ("nix-installer/" + $version + "/"),
+                        "overwrite": true
+                      },
+                      {
+                        "from": $nix_installer_sh,
+                        "to": ("nix-installer/" + $version + "/"),
+                        "overwrite": true
+                      },
+                      {
+                        "from": $nix_installer,
+                        "to": "nix-installer/latest/",
+                        "overwrite": true
+                      },
+                      {
+                        "from": $nix_installer_sh,
+                        "to": "nix-installer/latest/",
+                        "overwrite": true
+                      }
+                    ]')
+
+                  echo "Publishing JSON:"
+                  echo "$PUBLISH_JSON" | jq .
+
+                  if curl -fSs -X POST \
+                    -H "Content-Type: application/json" \
+                    -d "$PUBLISH_JSON" \
+                    "http://127.0.0.1:8888/publish"; then
+                    echo "Successfully published version $VERSION"
+                  else
+                    echo "Error: Failed to publish version $VERSION"
+                    exit 1
+                  fi
+                '';
+              };
+            in
+            pkgs.writeScript "publish.sh" ''
+              #!${pkgs.runtimeShell}
+              exec ${app}/bin/publish-hook "$@"
+            '';
+        };
     };
 }

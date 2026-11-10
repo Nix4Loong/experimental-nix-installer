@@ -81,6 +81,8 @@ impl Shell {
         const SYSTEM: &str = "x86_64-linux";
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         const SYSTEM: &str = "aarch64-linux";
+        #[cfg(all(target_os = "linux", target_arch = "loongarch64"))]
+        const SYSTEM: &str = "loongarch64-linux";
         #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
         const SYSTEM: &str = "x86_64-darwin";
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

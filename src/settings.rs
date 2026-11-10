@@ -197,7 +197,7 @@ pub struct CommonSettings {
         clap(
             long,
             action(ArgAction::SetTrue),
-            default_value = "false",
+            default_value = "true",
             global = true,
             env = "NIX_INSTALLER_ENABLE_FLAKES"
         )
@@ -238,6 +238,7 @@ impl CommonSettings {
             (Architecture::X86_64, OperatingSystem::Linux) => "nixbld",
             (Architecture::X86_32(_), OperatingSystem::Linux) => "nixbld",
             (Architecture::Aarch64(_), OperatingSystem::Linux) => "nixbld",
+            (Architecture::LoongArch64, OperatingSystem::Linux) => "nixbld",
             (Architecture::X86_64, OperatingSystem::MacOSX(_))
             | (Architecture::X86_64, OperatingSystem::Darwin(_)) => "_nixbld",
             (Architecture::Aarch64(_), OperatingSystem::MacOSX(_))
@@ -261,7 +262,7 @@ impl CommonSettings {
             force: false,
             skip_nix_conf: false,
             add_channel: false,
-            enable_flakes: false,
+            enable_flakes: true,
         })
     }
 
@@ -381,6 +382,9 @@ impl InitSettings {
                 (InitSystem::Systemd, linux_detect_systemd_started())
             },
             (Architecture::Aarch64(_), OperatingSystem::Linux) => {
+                (InitSystem::Systemd, linux_detect_systemd_started())
+            },
+            (Architecture::LoongArch64, OperatingSystem::Linux) => {
                 (InitSystem::Systemd, linux_detect_systemd_started())
             },
             (Architecture::X86_64, OperatingSystem::MacOSX(_))
@@ -515,7 +519,7 @@ mod tests {
     #[test]
     fn legacy_common_settings_keep_flakes_enabled() -> Result<(), Box<dyn std::error::Error>> {
         let settings = CommonSettings::try_default()?;
-        assert!(!settings.enable_flakes);
+        assert!(settings.enable_flakes);
 
         let mut legacy_receipt_settings = serde_json::to_value(settings)?;
         legacy_receipt_settings

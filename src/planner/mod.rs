@@ -234,6 +234,9 @@ impl BuiltinPlanner {
             (Architecture::Aarch64(_), OperatingSystem::Linux) => {
                 Ok(Self::Linux(linux::Linux::try_default()?))
             },
+            (Architecture::LoongArch64, OperatingSystem::Linux) => {
+                Ok(Self::Linux(linux::Linux::try_default()?))
+            },
             (Architecture::X86_64, OperatingSystem::MacOSX(_))
             | (Architecture::X86_64, OperatingSystem::Darwin(_)) => {
                 Ok(Self::Macos(macos::Macos::try_default()?))

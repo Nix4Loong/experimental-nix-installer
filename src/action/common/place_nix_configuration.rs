@@ -206,6 +206,26 @@ impl PlaceNixConfiguration {
             );
         }
 
+        // Configure default configuration for nix4loong
+        if !settings.contains_key("extra-system-features") {
+            settings.insert(
+                "extra-system-features".to_string(),
+                "gccarch-la64v1.0 gccarch-loongarch64".to_string(),
+            );
+        }
+        if !settings.contains_key("substituters") {
+            settings.insert(
+                "substituters".to_string(),
+                "https://cache.nix4loong.cn https://mirrors.nju.edu.cn/nix-channels/store https://cache.nixos.org".to_string(),
+            );
+        }
+        if !settings.contains_key("trusted-public-keys") {
+            settings.insert(
+                "trusted-public-keys".to_string(),
+                "cache.nix4loong.cn-2:ezZrinY0iBgG5wY+KJOATVPjtNQnQI3skCWrur4rnPk= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=".to_string(),
+            );
+        }
+
         // NOTE(cole-h): We want to ensure our experimental-features are not clobbered by user
         // config, so if a user specifies that, we exchange it for the `extra-` variant that just
         // appends to the list of experimental features.
